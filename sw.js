@@ -1,6 +1,6 @@
 /* Service worker：離線快取網頁本體與 Leaflet（底圖圖磚不快取）
    更新網頁後請把 VERSION 改掉，手機重新開啟即會換新版 */
-const VERSION = 'thsr-v1';
+const VERSION = 'thsr-v2';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

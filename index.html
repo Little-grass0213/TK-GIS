@@ -105,6 +105,22 @@ h2{font-size:15px;margin:0 0 8px;color:var(--muted);font-weight:600}
 .setup p{line-height:1.6;margin:6px 0}
 .file-btn{display:block;text-align:center;margin-top:14px}
 .file-btn input{display:none}
+/* 指北針 */
+.compass{display:flex;gap:14px;align-items:center}
+.compass svg{width:136px;height:136px;flex:none}
+.cmp-info{flex:1;min-width:0}
+.cmp-h{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.2}
+.cmp-t{font-size:15px;margin-top:6px;line-height:1.55}
+.cmp-t b{color:var(--accent)}
+.cmp-note{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
+.cmp-btn{margin-top:8px}
+.dial-bg{fill:var(--bg);stroke:var(--line);stroke-width:2}
+.dial-tick{stroke:var(--muted);stroke-width:1.5}
+.dial-txt{fill:var(--ink);font:700 13px sans-serif;text-anchor:middle;dominant-baseline:central}
+.dial-n{fill:#dc2626}
+.dial-trk{stroke:var(--accent);stroke-width:4;stroke-linecap:round}
+.dial-lbl{fill:var(--accent);font:700 11px sans-serif;text-anchor:middle;dominant-baseline:central;paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}
+.dial-me{fill:var(--ink)}
 .toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);
   background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:999px;font-size:14px;z-index:3000;
   opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw;text-align:center}
@@ -135,6 +151,35 @@ h2{font-size:15px;margin:0 0 8px;color:var(--muted);font-weight:600}
       <div class="ch dim" id="ch">---K+---</div>
       <div class="sub"><span id="side">—</span> <span class="acc" id="acc"></span></div>
       <div id="banner" class="banner" hidden></div>
+    </div>
+
+    <!-- 指北針：刻度盤隨手機方向旋轉，N 永遠指向北方；橘線為軌道走向 -->
+    <div class="card compass">
+      <svg viewBox="0 0 120 120" aria-label="指北針">
+        <circle class="dial-bg" cx="60" cy="60" r="56"/>
+        <g id="dial">
+          <g id="ticks"></g>
+          <g id="trk" display="none">
+            <line id="trkLine" class="dial-trk" x1="60" y1="60" x2="60" y2="60"/>
+            <text id="lblZ" class="dial-lbl">左營</text>
+            <text id="lblN" class="dial-lbl">南港</text>
+          </g>
+          <text id="cN" class="dial-txt dial-n" x="60" y="17">N</text>
+          <text id="cE" class="dial-txt" x="103" y="60">E</text>
+          <text id="cS" class="dial-txt" x="60" y="103">S</text>
+          <text id="cW" class="dial-txt" x="17" y="60">W</text>
+        </g>
+        <!-- 固定指標：手機正前方 -->
+        <path class="dial-me" d="M60 1 L53 13 L67 13 Z"/>
+        <circle class="dial-me" cx="60" cy="60" r="3"/>
+      </svg>
+      <div class="cmp-info">
+        <div class="label">手機朝向（磁北）</div>
+        <div class="cmp-h" id="cmpHead">—</div>
+        <div class="cmp-t" id="cmpTrack"></div>
+        <div class="cmp-note" id="cmpNote">手機平放、遠離金屬與車輛較準確</div>
+        <button id="btnCompass" class="small-btn cmp-btn">啟用指北針</button>
+      </div>
     </div>
 
     <div class="card grid">
@@ -360,6 +405,7 @@ function render(r) {
   $('exBack').innerHTML = exitHtml(r.back);
   $('btnShare').disabled = false;
   updateMap(r);
+  updateCompass();
 }
 function exitHtml(list) {
   if (!list.length) return '<div class="empty">無</div>';
@@ -442,6 +488,118 @@ async function share() {
   try { await navigator.clipboard.writeText(text); toast('已複製到剪貼簿'); }
   catch (e) { toast('無法分享，請手動截圖'); }
 }
+
+/* ================= 指北針（DeviceOrientation） =================
+   iOS：webkitCompassHeading（磁北、順時針），需使用者點按鈕授權
+   Android：deviceorientationabsolute 的 alpha（逆時針）→ heading = 360 - alpha
+   兩者再加上螢幕旋轉角，並以向量平均平滑，避免 359°↔0° 跳動 */
+let cmpOn = false, cmpSx = null, cmpSy = null, cmpHeading = null, cmpRot = 0, cmpLast = 0, cmpTimer = null, cmpRaf = 0;
+const DIR8 = ['北', '東北', '東', '東南', '南', '西南', '西', '西北'];
+const dir8 = h => DIR8[Math.round(((h % 360) + 360) % 360 / 45) % 8];
+const norm180 = d => ((d % 360) + 540) % 360 - 180;
+const ptOn = (deg, r) => [60 + r * Math.sin(deg * Math.PI / 180), 60 - r * Math.cos(deg * Math.PI / 180)];
+
+// 刻度（每 30°）
+(function drawTicks() {
+  let h = '';
+  for (let a = 0; a < 360; a += 30) {
+    const [x1, y1] = ptOn(a, 56), [x2, y2] = ptOn(a, a % 90 ? 50 : 47);
+    h += `<line class="dial-tick" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+  }
+  $('ticks').innerHTML = h;
+})();
+
+function screenAngle() {
+  return (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+}
+function onOrient(e) {
+  let h = null;
+  if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+    h = e.webkitCompassHeading;                                  // iOS
+    if (typeof e.webkitCompassAccuracy === 'number' && (e.webkitCompassAccuracy < 0 || e.webkitCompassAccuracy > 25))
+      $('cmpNote').textContent = '磁力計精度差，請拿手機在空中畫 8 字形校正';
+  } else if ((e.absolute || e.type === 'deviceorientationabsolute') && e.alpha != null) {
+    h = 360 - e.alpha;                                           // Android
+  }
+  if (h == null) return;
+  h = (h + screenAngle() + 360) % 360;
+  // 向量指數平均（平滑）
+  const r = h * Math.PI / 180, k = 0.25;
+  if (cmpSx === null) { cmpSx = Math.sin(r); cmpSy = Math.cos(r); }
+  else { cmpSx = cmpSx * (1 - k) + Math.sin(r) * k; cmpSy = cmpSy * (1 - k) + Math.cos(r) * k; }
+  cmpHeading = (Math.atan2(cmpSx, cmpSy) * 180 / Math.PI + 360) % 360;
+  cmpLast = Date.now();
+  if (!cmpRaf) cmpRaf = requestAnimationFrame(() => { cmpRaf = 0; updateCompass(); });
+}
+// fromUser：由使用者點按鈕觸發（iOS 授權必須在點按當下呼叫）
+async function startCompass(fromUser) {
+  if (!('DeviceOrientationEvent' in window)) { $('cmpNote').textContent = '此裝置不支援指北針'; return; }
+  let denied = false;
+  if (fromUser && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try { denied = (await DeviceOrientationEvent.requestPermission()) !== 'granted'; } catch (e) { denied = true; }
+  }
+  const evt = 'ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation';
+  window.addEventListener(evt, onOrient);
+  cmpOn = true; prefs.set('compass', true);
+  $('btnCompass').textContent = '關閉指北針';
+  $('cmpNote').textContent = '手機平放、遠離金屬與車輛較準確';
+  clearTimeout(cmpTimer);
+  // 3 秒內沒收到方向資料：自動恢復時（iOS 未授權）改回按鈕；使用者啟用時提示原因
+  cmpTimer = setTimeout(() => {
+    if (!cmpOn || cmpLast) return;
+    if (!fromUser) { stopCompass(); prefs.set('compass', true); $('cmpNote').textContent = '請點「啟用指北針」'; }
+    else $('cmpNote').textContent = denied ? '未取得方向感測權限，請允許「動作與方向」存取'
+                                           : '收不到方向資料：此裝置可能沒有磁力計，或需以 HTTPS 開啟';
+  }, 3000);
+}
+function stopCompass() {
+  window.removeEventListener('deviceorientationabsolute', onOrient);
+  window.removeEventListener('deviceorientation', onOrient);
+  cmpOn = false; cmpHeading = null; cmpSx = cmpSy = null; cmpLast = 0; prefs.set('compass', false);
+  $('btnCompass').textContent = '啟用指北針'; $('cmpHead').textContent = '—';
+  updateCompass();
+}
+// 相對方位描述：d = 目標方位 - 手機朝向（-180~180）
+function relDesc(d) {
+  const a = Math.abs(d), side = d > 0 ? '右' : '左';
+  if (a <= 20) return '正前方';
+  if (a >= 160) return '正後方';
+  return (a < 70 ? side + '前方' : a <= 110 ? side + '方' : side + '後方') + ` ${Math.round(a)}°`;
+}
+function updateCompass() {
+  const h = cmpHeading;
+  // 刻度盤旋轉：取最短路徑累加，避免 359°→0° 整圈轉
+  if (h != null) {
+    cmpRot += norm180(-h - cmpRot);
+    $('dial').setAttribute('transform', `rotate(${cmpRot.toFixed(1)} 60 60)`);
+    $('cmpHead').textContent = `${Math.round(h)}°  ${dir8(h)}`;
+    // 文字反向旋轉保持正立
+    for (const id of ['cN', 'cE', 'cS', 'cW', 'lblZ', 'lblN']) {
+      const el = $(id); el.setAttribute('transform', `rotate(${(-cmpRot).toFixed(1)} ${el.getAttribute('x')} ${el.getAttribute('y')})`);
+    }
+  }
+  // 軌道走向（往左營方向的方位角，TM2 方格北，與真北差 <1°）
+  const r = last, t = $('cmpTrack');
+  if (!r || !M) { $('trk').setAttribute('display', 'none'); t.textContent = ''; return; }
+  const az = (Math.atan2(r.p.tx, r.p.ty) * 180 / Math.PI + 360) % 360;
+  const [zx, zy] = ptOn(az, 20), [nx, ny] = ptOn(az + 180, 20), [lzx, lzy] = ptOn(az, 29), [lnx, lny] = ptOn(az + 180, 29);
+  const L = $('trkLine');
+  L.setAttribute('x1', nx.toFixed(1)); L.setAttribute('y1', ny.toFixed(1));
+  L.setAttribute('x2', zx.toFixed(1)); L.setAttribute('y2', zy.toFixed(1));
+  $('lblZ').setAttribute('x', lzx.toFixed(1)); $('lblZ').setAttribute('y', lzy.toFixed(1));
+  $('lblN').setAttribute('x', lnx.toFixed(1)); $('lblN').setAttribute('y', lny.toFixed(1));
+  for (const id of ['lblZ', 'lblN']) {
+    const el = $(id); el.setAttribute('transform', `rotate(${(-cmpRot).toFixed(1)} ${el.getAttribute('x')} ${el.getAttribute('y')})`);
+  }
+  $('trk').removeAttribute('display');
+  const azN = (az + 180) % 360;
+  if (h == null) {
+    t.innerHTML = `軌道走向：往左營 ${Math.round(az)}°（${dir8(az)}）<br>往南港 ${Math.round(azN)}°（${dir8(azN)}）`;
+  } else {
+    t.innerHTML = `往左營：<b>${relDesc(norm180(az - h))}</b><br>往南港：<b>${relDesc(norm180(azN - h))}</b>`;
+  }
+}
+$('btnCompass').onclick = () => cmpOn ? stopCompass() : startCompass(true);
 
 /* ================= 底圖（Leaflet，勾選後才載入） ================= */
 let map = null, mk = {};
@@ -537,6 +695,8 @@ $('btnSim').onclick = () => applySim(parseFloat($('simLat').value), parseFloat($
   $('optMap').checked = prefs.get('map', false);     // 底圖預設關閉
   $('optWake').checked = prefs.get('wake', true);
   $('optSim').checked = prefs.get('sim', false); $('simBox').hidden = !$('optSim').checked;
+  // 指北針：上次有開 → 自動嘗試啟用（Android 可直接收到資料；iOS 未授權時 3 秒後改回按鈕）
+  if (prefs.get('compass', false)) startCompass(false);
   const sp = prefs.get('simPos', null); if (sp) { $('simLat').value = sp[0]; $('simLon').value = sp[1]; }
   try { const data = await idb.get('data'); if (data) M = buildModel(data); } catch (e) {}
   showUi();
